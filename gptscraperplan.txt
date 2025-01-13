@@ -1,0 +1,29 @@
+Let's create a puppeteer script with the following functionality:
+1. Load the subjects.txt file with different subjects separated by new lines, with the text before the colon ":" being the module code and the text after being the folder and PDF name
+1.5. Use these plugins: 
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker');
+puppeteer.use(StealthPlugin());
+puppeteer.use(AdblockerPlugin({ blockTrackers: true })); 
+2. Navigate to this link: https://regexam.nuigalway.ie/regexam/paper_index_search_main_menu.asp#
+3. Wait 5 seconds, operating in non-headless mode
+4. Wait until the browser is on this page: https://regexam.nuigalway.ie/regexam/paper_index_search_main_menu.asp#
+5. Await this element: 
+<td>
+<input type="text" size="12" maxlength="10" name="module" value="">
+</td>
+6. Input the module code of the first subject into the input element
+7. Press this button:
+<input type="submit" value="Search" onclick="document.search_form.help_flag.value='';" onmouseover="window.status='Submit request using current parameters';return true" onmouseout="window.status='';return true" title="Submit request using current parameters">
+8. Wait 3 seconds
+9. Find this frame: <frame src="paper_index_help.asp" name="results_pane">
+10. Look through the elements for each element like either of the following (there will be multiple):
+<tr bgcolor="#E0F0F0">
+OR
+<tr bgcolor="#C0F0F0">
+11. See if it contains a href
+12. If so, download the pdf file within and save it to a folder in the directory with the folder name of the current subject
+13. Repeat for each of the elements of the kind described in part 10
+14. Splice all of the PDFs together, in order of download, naming the PDF the name of the folder name of the current subject
+15. Move this PDF into the directory and delete the folder that once contained it
+16. Repeat for each subject in the subjects.txt document
