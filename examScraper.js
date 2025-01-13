@@ -1,3 +1,4 @@
+//NOTE: IF DOESN'T WORK, RESTORE PREVIOUS GIT
 const puppeteer = require('puppeteer-extra');
 const fs = require('fs').promises;
 const path = require('path');
@@ -148,7 +149,7 @@ let isFirstRun = true;
 
 async function processSubject(browser, subject) {
     console.log(`\n=== Processing subject: ${subject.code} - ${subject.name} ===`);
-    const page = await browser.newPage();
+    let page = await browser.newPage();
     const folderPath = path.join(__dirname, subject.name);
     console.log(`Creating directory: ${folderPath}`);
     await fs.mkdir(folderPath, { recursive: true });
@@ -170,17 +171,48 @@ async function processSubject(browser, subject) {
         }
         console.log('✓ Found search frame');
 
+        // Switch to headless mode
+        console.log('Switching to headless mode...');
+        const cookies = await page.cookies();  // Get cookies directly from page
+        const url = page.url();  // Save current URL
+        
+        // Close the current browser
+        await browser.close();
+        
+        // Launch new headless browser
+        browser = await puppeteer.launch({
+            headless: 'new',
+            defaultViewport: null,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+        
+        // Create new page and restore session
+        page = await browser.newPage();
+        await page.setCookie(...cookies);
+        
+        // Navigate back and wait for network idle
+        await page.goto(url, { waitUntil: 'networkidle0' });
+        
+        // Get the frames again in the new page
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const newFrames = await page.frames();
+        const newSearchFrame = newFrames.find(frame => frame.name() === 'search_pane');
+        
+        if (!newSearchFrame) {
+            throw new Error('Search frame not found after headless transition');
+        }
+
         console.log(`Entering module code: ${subject.code}`);
-        await searchFrame.waitForSelector('input[name="module"]');
-        await searchFrame.type('input[name="module"]', subject.code);
+        await newSearchFrame.waitForSelector('input[name="module"]');
+        await newSearchFrame.type('input[name="module"]', subject.code);
         console.log('Clicking search button...');
-        await searchFrame.click('input[type="submit"][value="Search"]');
+        await newSearchFrame.click('input[type="submit"][value="Search"]');
         
         console.log('Waiting for results (3 seconds)...');
         await new Promise(resolve => setTimeout(resolve, 3000));
 
         console.log('Looking for results frame...');
-        const resultsFrame = frames.find(frame => frame.name() === 'results_pane');
+        const resultsFrame = newFrames.find(frame => frame.name() === 'results_pane');
         
         if (!resultsFrame) {
             throw new Error('Results frame not found');
@@ -228,7 +260,7 @@ async function main() {
     const subjects = await readSubjects();
     
     console.log('Launching browser...');
-    const browser = await puppeteer.launch({
+    let browser = await puppeteer.launch({
         headless: false,
         defaultViewport: null
     });
