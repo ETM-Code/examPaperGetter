@@ -19,7 +19,7 @@ An automated tool for downloading and organizing exam papers from educational in
 
 1. Clone this repository:
 ```bash
-git clone [your-repo-url]
+git clone https://github.com/ETM-Code/examPaperGetter
 cd exampapergetter
 ```
 
