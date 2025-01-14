@@ -71,18 +71,15 @@ class CanvasDownloader:
         response = requests.get(url, headers=self.headers, params=params)
         return response.json()
 
-    def convert_to_pdf(self, input_path):
+    def convert_to_pdf(self, input_path, pdf_dir):
         """Convert Office documents to PDF using LibreOffice"""
         if not os.path.exists(input_path):
             return None
             
-        # Get the directory and filename
-        input_dir = os.path.dirname(input_path)
+        # Get the filename
         filename = os.path.basename(input_path)
-        pdf_dir = os.path.join(input_dir, 'PDF_Versions')
-        os.makedirs(pdf_dir, exist_ok=True)
         
-        # Construct the output PDF path
+        # Construct the output PDF path in the subject's PDF directory
         output_pdf = os.path.join(pdf_dir, os.path.splitext(filename)[0] + '.pdf')
         
         # If PDF already exists and is newer than the source file, skip conversion
@@ -142,7 +139,7 @@ class CanvasDownloader:
         # Download if remote file is newer
         return remote_dt > local_dt
 
-    def download_file(self, url, filepath):
+    def download_file(self, url, filepath, pdf_dir):
         """Download a file from Canvas"""
         # If the url is a JSON response, extract the actual download URL
         file_data = url if isinstance(url, dict) else {'url': url}
@@ -171,7 +168,7 @@ class CanvasDownloader:
             
             # Convert to PDF if it's an Office document
             if filepath.lower().endswith(('.docx', '.pptx', '.doc', '.ppt')):
-                self.convert_to_pdf(filepath)
+                self.convert_to_pdf(filepath, pdf_dir)
             
             return True
         else:
@@ -184,8 +181,12 @@ class CanvasDownloader:
         course_name = course['name']
         
         # Create course directory
-        course_dir = os.path.join(base_path, course_name, 'Files')
+        course_dir = base_path
         os.makedirs(course_dir, exist_ok=True)
+        
+        # Create PDF directory for this subject
+        pdf_dir = os.path.join(course_dir, 'PDF_Versions')
+        os.makedirs(pdf_dir, exist_ok=True)
         
         # Get all files
         try:
@@ -208,7 +209,7 @@ class CanvasDownloader:
                     filename = filename.replace('+', ' ')
                     filepath = os.path.join(course_dir, filename)
                     print(f"Processing file: {filepath}")
-                    self.download_file(file, filepath)
+                    self.download_file(file, filepath, pdf_dir)
         except Exception as e:
             print(f"Error downloading files for course {course_name}: {str(e)}")
 
@@ -217,9 +218,11 @@ class CanvasDownloader:
         course_id = course['id']
         course_name = course['name']
         
-        # Create course directory
-        course_dir = os.path.join(base_path, course_name)
+        # Create course directory and PDF directory
+        course_dir = base_path
         os.makedirs(course_dir, exist_ok=True)
+        pdf_dir = os.path.join(course_dir, 'PDF_Versions')
+        os.makedirs(pdf_dir, exist_ok=True)
         
         # Get all modules
         try:
@@ -238,8 +241,6 @@ class CanvasDownloader:
                     continue
                     
                 module_name = module.get('name', 'Unnamed Module')
-                module_dir = os.path.join(course_dir, module_name)
-                os.makedirs(module_dir, exist_ok=True)
                 
                 # Get module items
                 try:
@@ -247,6 +248,13 @@ class CanvasDownloader:
                     if not isinstance(items, list):
                         print(f"Warning: Unexpected items response type: {type(items)}")
                         continue
+                    
+                    # If module has only one item, don't create a module directory
+                    if len(items) == 1:
+                        target_dir = course_dir
+                    else:
+                        target_dir = os.path.join(course_dir, module_name)
+                        os.makedirs(target_dir, exist_ok=True)
                     
                     for item in items:
                         if not isinstance(item, dict):
@@ -267,9 +275,9 @@ class CanvasDownloader:
                                                 filename = f"{item.get('title', 'untitled')}.html"
                                             
                                             filename = filename.replace('+', ' ')
-                                            filepath = os.path.join(module_dir, filename)
+                                            filepath = os.path.join(target_dir, filename)
                                             print(f"Processing: {filepath}")
-                                            self.download_file(file_data, filepath)
+                                            self.download_file(file_data, filepath, pdf_dir)
                                         else:
                                             print(f"Warning: Unexpected file data response: {type(file_data)}")
                                 except Exception as e:
