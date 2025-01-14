@@ -1,0 +1,6 @@
+Comms:modules:'/Users/eoghancollins/Desktop/Engineering/Year 2/Comms'
+Maths II:files:'/Users/eoghancollins/Desktop/Engineering/Year 2/Maths II'
+Circuits:both:'/Users/eoghancollins/Desktop/Engineering/Year 2/Circuits and Systems'
+EM Theory:both:'/Users/eoghancollins/Desktop/Engineering/Year 2/EM Theory'
+Micro:both:'/Users/eoghancollins/Desktop/Engineering/Year 2/Microprocessors'
+OOP 2:both:'/Users/eoghancollins/Desktop/Engineering/Year 2/OOP 2'
