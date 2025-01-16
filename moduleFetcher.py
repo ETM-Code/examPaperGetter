@@ -1,11 +1,14 @@
 import os
 import requests
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, urljoin
 import subprocess
 from pathlib import Path
 from datetime import datetime
 import pytz
 from dotenv import load_dotenv
+from weasyprint import HTML
+import re
+from bs4 import BeautifulSoup
 
 load_dotenv()
 api_key = os.getenv('ACCESS_TOKEN')
@@ -19,7 +22,15 @@ class CanvasDownloader:
             'Authorization': f'Bearer {access_token}'
         }
         self.download_config = self._load_download_config()
-        
+        # File types we want to download
+        self.target_extensions = {
+            'document': ('.doc', '.docx', '.odt', '.rtf', '.txt'),
+            'presentation': ('.ppt', '.pptx', '.odp'),
+            'spreadsheet': ('.xls', '.xlsx', '.ods'),
+            'pdf': ('.pdf',),
+            'html': ('.html', '.htm')
+        }
+
     def _load_download_config(self):
         """Load download configuration from downSubjects.txt"""
         config = {}
@@ -60,14 +71,20 @@ class CanvasDownloader:
     def get_module_items(self, course_id, module_id):
         """Get all items in a module"""
         url = f'{self.base_url}/api/v1/courses/{course_id}/modules/{module_id}/items'
-        params = {'per_page': 100}
+        params = {
+            'per_page': 100,
+            'include[]': ['content_details', 'url']  # Request additional details
+        }
         response = requests.get(url, headers=self.headers, params=params)
         return response.json()
 
     def get_files(self, course_id):
         """Get all files in a course"""
         url = f'{self.base_url}/api/v1/courses/{course_id}/files'
-        params = {'per_page': 100}
+        params = {
+            'per_page': 100,
+            'include[]': ['url', 'size', 'created_at', 'updated_at', 'modified_at']
+        }
         response = requests.get(url, headers=self.headers, params=params)
         return response.json()
 
@@ -139,6 +156,35 @@ class CanvasDownloader:
         # Download if remote file is newer
         return remote_dt > local_dt
 
+    def convert_html_to_pdf(self, html_path, pdf_dir):
+        """Convert HTML file to PDF using weasyprint"""
+        if not os.path.exists(html_path):
+            return None
+            
+        # Get the filename without extension
+        filename = os.path.splitext(os.path.basename(html_path))[0]
+        
+        # Construct the output PDF path
+        output_pdf = os.path.join(pdf_dir, f"{filename}.pdf")
+        
+        # If PDF already exists and is newer than the source file, skip conversion
+        if os.path.exists(output_pdf):
+            if os.path.getmtime(output_pdf) > os.path.getmtime(html_path):
+                print(f"PDF version already exists and is up to date: {output_pdf}")
+                return output_pdf
+        
+        try:
+            # Convert HTML to PDF using weasyprint
+            HTML(filename=html_path).write_pdf(output_pdf)
+            
+            if os.path.exists(output_pdf):
+                print(f"Successfully converted HTML to PDF: {output_pdf}")
+                return output_pdf
+        except Exception as e:
+            print(f"Failed to convert {html_path} to PDF: {e}")
+        
+        return None
+
     def download_file(self, url, filepath, pdf_dir):
         """Download a file from Canvas"""
         # If the url is a JSON response, extract the actual download URL
@@ -154,6 +200,24 @@ class CanvasDownloader:
             print(f"File already exists and is up to date: {filepath}")
             return True
             
+        # Handle new Canvas file upload behavior
+        if 'upload_url' in file_data:
+            # New behavior: need to follow up with upload service
+            try:
+                upload_response = requests.post(
+                    file_data['upload_url'],
+                    data=file_data.get('upload_params', {}),
+                    headers=self.headers
+                )
+                if upload_response.status_code != 200:
+                    print(f"Failed to initiate file download: {upload_response.status_code}")
+                    return False
+                # Get the download URL from the response
+                download_url = upload_response.json().get('url', download_url)
+            except Exception as e:
+                print(f"Error handling file upload: {str(e)}")
+                return False
+            
         # Add download parameters if they're not already present
         if 'download_frd=1' not in download_url:
             download_url += '&download_frd=1' if '?' in download_url else '?download_frd=1'
@@ -166,9 +230,24 @@ class CanvasDownloader:
                     f.write(chunk)
             print(f"Successfully downloaded: {filepath}")
             
-            # Convert to PDF if it's an Office document
-            if filepath.lower().endswith(('.docx', '.pptx', '.doc', '.ppt')):
+            # Convert to PDF based on file type
+            file_lower = filepath.lower()
+            if file_lower.endswith(('.docx', '.pptx', '.doc', '.ppt', '.odt', '.ods', '.odp')):
+                # Office and OpenDocument formats
                 self.convert_to_pdf(filepath, pdf_dir)
+            elif file_lower.endswith(('.html', '.htm')):
+                # HTML files
+                self.convert_html_to_pdf(filepath, pdf_dir)
+            elif file_lower.endswith(('.txt', '.rtf')):
+                # Text files - convert to PDF for consistency
+                self.convert_to_pdf(filepath, pdf_dir)
+            elif file_lower.endswith('.pdf'):
+                # If it's already a PDF, copy it to the PDF directory
+                pdf_path = os.path.join(pdf_dir, os.path.basename(filepath))
+                if not os.path.exists(pdf_path) or os.path.getmtime(filepath) > os.path.getmtime(pdf_path):
+                    import shutil
+                    shutil.copy2(filepath, pdf_path)
+                    print(f"Copied PDF to PDF directory: {pdf_path}")
             
             return True
         else:
@@ -212,6 +291,62 @@ class CanvasDownloader:
                     self.download_file(file, filepath, pdf_dir)
         except Exception as e:
             print(f"Error downloading files for course {course_name}: {str(e)}")
+
+    def extract_canvas_file_id(self, url):
+        """Extract Canvas file ID from various URL formats"""
+        # Try to extract file ID from Canvas file URLs
+        file_patterns = [
+            r'/files/(\d+)',  # Standard file URL
+            r'/download\?verifier=.*?&files=(\d+)',  # Download URL
+            r'/preview\?verifier=.*?&files=(\d+)'  # Preview URL
+        ]
+        
+        for pattern in file_patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
+
+    def get_file_info(self, file_id):
+        """Get file information from Canvas API"""
+        url = f'{self.base_url}/api/v1/files/{file_id}'
+        response = requests.get(url, headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        return None
+
+    def process_embedded_files(self, html_content, course_id, target_dir, pdf_dir):
+        """Extract and download files linked in HTML content"""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        downloaded_files = []
+        
+        # Find all links and download relevant files
+        for link in soup.find_all(['a', 'iframe', 'embed']):
+            url = link.get('href') or link.get('src')
+            if not url:
+                continue
+                
+            # Skip external links and anchors
+            if url.startswith('#') or url.startswith('http') and self.base_url not in url:
+                continue
+            
+            # Make relative URLs absolute
+            if not url.startswith('http'):
+                url = urljoin(self.base_url, url)
+            
+            # Check if it's a Canvas file
+            file_id = self.extract_canvas_file_id(url)
+            if file_id:
+                file_info = self.get_file_info(file_id)
+                if file_info:
+                    filename = file_info.get('filename', '').replace('+', ' ')
+                    # Check if the file extension is one we want to download
+                    if any(filename.lower().endswith(ext) for ext_group in self.target_extensions.values() for ext in ext_group):
+                        filepath = os.path.join(target_dir, filename)
+                        if self.download_file(file_info, filepath, pdf_dir):
+                            downloaded_files.append(filepath)
+        
+        return downloaded_files
 
     def download_course_modules(self, course, base_path):
         """Download all module content for a course"""
@@ -265,21 +400,58 @@ class CanvasDownloader:
                             url = item.get('url')
                             if url:
                                 try:
-                                    # Make a request to get the file details
-                                    response = requests.get(url, headers=self.headers)
+                                    # For HTML pages, construct the proper Canvas URL
+                                    if item.get('type') == 'Page':
+                                        page_url = f"{self.base_url}/api/v1/courses/{course_id}/pages/{item.get('page_url')}"
+                                        response = requests.get(page_url, headers=self.headers)
+                                    else:
+                                        # For files, use the existing URL
+                                        response = requests.get(url, headers=self.headers)
+                                        
                                     if response.status_code == 200:
-                                        file_data = response.json()
-                                        if isinstance(file_data, dict):
-                                            filename = file_data.get('filename', '')
-                                            if not filename:
-                                                filename = f"{item.get('title', 'untitled')}.html"
+                                        if item.get('type') == 'Page':
+                                            # For pages, get the HTML content directly
+                                            page_data = response.json()
+                                            html_content = page_data.get('body', '')
                                             
-                                            filename = filename.replace('+', ' ')
+                                            # Process embedded files before saving the HTML
+                                            print("Checking for embedded files...")
+                                            embedded_files = self.process_embedded_files(html_content, course_id, target_dir, pdf_dir)
+                                            if embedded_files:
+                                                print(f"Downloaded {len(embedded_files)} embedded files")
+                                            
+                                            # Create a proper HTML file with the content
+                                            filename = f"{item.get('title', 'untitled')}.html"
                                             filepath = os.path.join(target_dir, filename)
-                                            print(f"Processing: {filepath}")
-                                            self.download_file(file_data, filepath, pdf_dir)
+                                            
+                                            # Write the HTML content with proper structure
+                                            with open(filepath, 'w', encoding='utf-8') as f:
+                                                f.write(f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{item.get('title', 'Untitled')}</title>
+</head>
+<body>
+{html_content}
+</body>
+</html>""")
+                                            print(f"Successfully saved HTML content: {filepath}")
+                                            self.convert_html_to_pdf(filepath, pdf_dir)
                                         else:
-                                            print(f"Warning: Unexpected file data response: {type(file_data)}")
+                                            # Handle regular file downloads
+                                            file_data = response.json()
+                                            if isinstance(file_data, dict):
+                                                filename = file_data.get('filename', '')
+                                                if not filename:
+                                                    filename = f"{item.get('title', 'untitled')}.html"
+                                                
+                                                filename = filename.replace('+', ' ')
+                                                filepath = os.path.join(target_dir, filename)
+                                                print(f"Processing: {filepath}")
+                                                self.download_file(file_data, filepath, pdf_dir)
+                                            else:
+                                                print(f"Warning: Unexpected file data response: {type(file_data)}")
                                 except Exception as e:
                                     print(f"Error processing module item: {str(e)}")
                 except Exception as e:
